@@ -13,5 +13,5 @@ jobs:
         uses: polygenelubricants/repository-insight-tracker@v1.0.0
         with:
           github-token: ${{ secrets.TOKEN }}
-          owner: 'PolygeneLubricants'
-          repository: 'repository-insight-tracker'
+          owner: 'carceneaux-forks'
+          repository: 'powershell'
