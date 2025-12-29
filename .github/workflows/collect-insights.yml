@@ -10,8 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Collect insights
-        uses: polygenelubricants/repository-insight-tracker@v1.0.0
+        uses: carceneaux-forks/repository-insight-tracker@main
         with:
           github-token: ${{ secrets.TOKEN }}
-          owner: 'PolygeneLubricants'
+          owner: 'carceneaux-forks'
           repository: 'repository-insight-tracker'
