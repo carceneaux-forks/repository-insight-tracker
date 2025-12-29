@@ -5,20 +5,57 @@ const { Base64 } = require("js-base64");
 
 async function run() {
   try {
-    const token = core.getInput("github-token");
-    const octokit = github.getOctokit(token);
+    // Mock variables for testing. Enables local testing without GitHub Actions
+    // process.env.INPUT_INSIGHTS_TOKEN =
+    //   "github_pat_..."; // Replace with a valid token
+    // process.env.INPUT_COMMIT_TOKEN =
+    //   "github_pat_..."; // Replace with a valid token
+    // process.env.INPUT_OWNER = "carceneaux-forks";
+    // process.env.INPUT_REPOSITORY = "powershell";
+    // process.env.INPUT_FORMAT = "csv";
+    // process.env.INPUT_STORAGE_OWNER = "carceneaux-forks";
+    // process.env.INPUT_STORAGE_REPO = "repository-insight-tracker";
+    // process.env.GITHUB_REPOSITORY = "fake/fake";
+
+    // Initializing inputs and Octokit clients
+    const insightsToken =
+      core.getInput("insights_token") || core.getInput("github-token");
+    const commitToken =
+      core.getInput("commit_token") || core.getInput("github-token");
+    const octokitInsights = github.getOctokit(insightsToken);
+    const octokitCommit = github.getOctokit(commitToken);
     const owner = core.getInput("owner");
     const repo = core.getInput("repository");
-    const branch = core.getInput("branch");
+    const { owner: githubOwner, repo: githubRepo } = github.context.repo;
+    const storageOwner = core.getInput("storage_owner") || githubOwner;
+    const storageRepo = core.getInput("storage_repo") || githubRepo;
+    const rootDir = core.getInput("directory") || ".insights";
+    const branch = core.getInput("branch") || "repository-insights";
+    const format = (core.getInput("format") || "json").toLowerCase(); // 'json' or 'csv'
+    // const allRepos = core.getInput("all-repositories") || "false";
+    console.log("Storage repo set to: " + storageOwner + "/" + storageRepo);
+    console.log(
+      `Sending insights to the '${branch}' branch in the '${rootDir}' directory in the ${format} format.`
+    );
+    console.log(`Gathering insights for the '${owner}/${repo}' repository.`);
 
     const { stargazerCount, commitCount, contributorsCount } =
-      await getRepoStats(octokit, owner, repo);
+      await getRepoStats(octokitInsights, owner, repo);
 
-    await ensureBranchExists({ octokit, branch });
+    await ensureBranchExists({
+      octokitCommit,
+      storageOwner,
+      storageRepo,
+      branch,
+    });
 
     let [insightsFile, insightsCount] = await getInsightsFile({
-      octokit,
+      octokitCommit,
+      storageOwner,
+      storageRepo,
       branch,
+      rootDir,
+      format,
     });
 
     // Check if the insights file is empty or has less than 14 entries
@@ -36,8 +73,13 @@ async function run() {
         let yesterdayDateString = today.toISOString().split("T")[0];
 
         let [yesterdayTraffic, yesterdayClones] = await Promise.all([
-          getYesterdayTraffic(octokit, owner, repo, yesterdayDateString),
-          getYesterdayClones(octokit, owner, repo, yesterdayDateString),
+          getYesterdayTraffic(
+            octokitInsights,
+            owner,
+            repo,
+            yesterdayDateString
+          ),
+          getYesterdayClones(octokitInsights, owner, repo, yesterdayDateString),
         ]);
 
         insightsFile = await generateFileContent({
@@ -48,6 +90,7 @@ async function run() {
           yesterdayTraffic,
           yesterdayClones,
           yesterdayDateString,
+          format,
         });
 
         i--;
@@ -58,8 +101,8 @@ async function run() {
     const yesterdayDateString = getYesterdayDateString();
 
     const [yesterdayTraffic, yesterdayClones] = await Promise.all([
-      getYesterdayTraffic(octokit, owner, repo, yesterdayDateString),
-      getYesterdayClones(octokit, owner, repo, yesterdayDateString),
+      getYesterdayTraffic(octokitInsights, owner, repo, yesterdayDateString),
+      getYesterdayClones(octokitInsights, owner, repo, yesterdayDateString),
     ]);
 
     logResults({
@@ -86,13 +129,18 @@ async function run() {
       yesterdayTraffic,
       yesterdayClones,
       yesterdayDateString,
+      format,
     });
     // console.log("File Content:", fileContent);
 
     await commitFileToBranch({
-      octokit,
+      octokitCommit,
+      storageOwner,
+      storageRepo,
       branch,
+      rootDir,
       fileContent,
+      format,
     });
   } catch (error) {
     console.log(error);
@@ -106,8 +154,8 @@ function getYesterdayDateString() {
   return yesterday.toISOString().split("T")[0];
 }
 
-async function getYesterdayTraffic(octokit, owner, repo, dateString) {
-  const { data: viewsData } = await octokit.rest.repos.getViews({
+async function getYesterdayTraffic(octokitInsights, owner, repo, dateString) {
+  const { data: viewsData } = await octokitInsights.rest.repos.getViews({
     owner,
     repo,
     per: "day",
@@ -119,8 +167,8 @@ async function getYesterdayTraffic(octokit, owner, repo, dateString) {
   );
 }
 
-async function getYesterdayClones(octokit, owner, repo, dateString) {
-  const { data: clonesData } = await octokit.rest.repos.getClones({
+async function getYesterdayClones(octokitInsights, owner, repo, dateString) {
+  const { data: clonesData } = await octokitInsights.rest.repos.getClones({
     owner,
     repo,
     per: "day",
@@ -132,7 +180,7 @@ async function getYesterdayClones(octokit, owner, repo, dateString) {
   );
 }
 
-async function getRepoStats(octokit, owner, repo) {
+async function getRepoStats(octokitInsights, owner, repo) {
   const query = `
     {
       repository(owner: "${owner}", name: "${repo}") {
@@ -156,7 +204,7 @@ async function getRepoStats(octokit, owner, repo) {
       }
     }`;
 
-  const response = await octokit.graphql(query);
+  const response = await octokitInsights.graphql(query);
 
   const stargazerCount = response.repository.stargazerCount;
   const commitCount =
@@ -207,13 +255,16 @@ function setOutputs({
   core.setOutput("clones_uniques", yesterdayClones.uniques);
 }
 
-async function getInsightsFile({ octokit, branch }) {
-  let format = core.getInput("format") || "json"; // 'json' or 'csv'
-  format = format.toLowerCase();
-  const rootDir = core.getInput("directory");
+async function getInsightsFile({
+  octokitCommit,
+  storageOwner,
+  storageRepo,
+  branch,
+  rootDir,
+  format,
+}) {
   const file_path_owner = core.getInput("owner");
   const file_path_repo = core.getInput("repository");
-  const { owner, repo } = github.context.repo;
   const dirPath = path.join(rootDir, file_path_owner, file_path_repo);
   const filePath = path.join(dirPath, `stats.${format}`);
 
@@ -221,9 +272,9 @@ async function getInsightsFile({ octokit, branch }) {
 
   try {
     // Check if the file exists in the repository
-    const { data: fileData } = await octokit.rest.repos.getContent({
-      owner,
-      repo,
+    const { data: fileData } = await octokitCommit.rest.repos.getContent({
+      owner: storageOwner,
+      repo: storageRepo,
       path: filePath,
       ref: branch,
     });
@@ -279,10 +330,8 @@ async function generateFileContent({
   yesterdayTraffic,
   yesterdayClones,
   yesterdayDateString,
+  format,
 }) {
-  let format = core.getInput("format") || "json"; // 'json' or 'csv'
-  format = format.toLowerCase();
-
   const newEntry = {
     date: yesterdayDateString,
     stargazers: stargazerCount,
@@ -352,31 +401,34 @@ async function generateFileContent({
   return fileContent;
 }
 
-async function ensureBranchExists({ octokit, branch }) {
-  const { owner, repo } = github.context.repo;
-
+async function ensureBranchExists({
+  octokitCommit,
+  storageOwner,
+  storageRepo,
+  branch,
+}) {
   try {
     // Check if the branch exists
-    await octokit.rest.git.getRef({
-      owner,
-      repo,
+    await octokitCommit.rest.git.getRef({
+      owner: storageOwner,
+      repo: storageRepo,
       ref: `heads/${branch}`,
     });
     // Branch exists, no action needed
   } catch (error) {
     if (error.status === 404) {
       // Branch does not exist, create it
-      const { data: refData } = await octokit.rest.git.getRef({
-        owner,
-        repo,
+      const { data: refData } = await octokitCommit.rest.git.getRef({
+        owner: storageOwner,
+        repo: storageRepo,
         ref: "heads/main", // Base branch from which to create the new branch
       });
 
       const mainSha = refData.object.sha;
 
-      await octokit.rest.git.createRef({
-        owner,
-        repo,
+      await octokitCommit.rest.git.createRef({
+        owner: storageOwner,
+        repo: storageRepo,
         ref: `refs/heads/${branch}`,
         sha: mainSha,
       });
@@ -388,46 +440,51 @@ async function ensureBranchExists({ octokit, branch }) {
   }
 }
 
-async function commitFileToBranch({ octokit, branch, fileContent }) {
-  let format = core.getInput("format") || "json"; // 'json' or 'csv'
-  format = format.toLowerCase();
-  const rootDir = core.getInput("directory") || "./data";
-  const { owner, repo } = github.context.repo;
+async function commitFileToBranch({
+  octokitCommit,
+  storageOwner,
+  storageRepo,
+  branch,
+  rootDir,
+  fileContent,
+  format,
+}) {
   const file_path_owner = core.getInput("owner");
   const file_path_repo = core.getInput("repository");
   const dirPath = path.join(rootDir, file_path_owner, file_path_repo);
   const filePath = path.join(dirPath, `stats.${format}`);
+  // console.log(`Listing vars before commit: owner=${storageOwner}, repo=${storageRepo}, branch=${branch}, filePath=${filePath}`);
 
   // Get the SHA of the branch reference
-  const { data: refData } = await octokit.rest.git.getRef({
-    owner,
-    repo,
+  const { data: refData } = await octokitCommit.rest.git.getRef({
+    owner: storageOwner,
+    repo: storageRepo,
     ref: `heads/${branch}`,
   });
 
   const commitSha = refData.object.sha;
 
   // Get the tree associated with the latest commit
-  const { data: commitData } = await octokit.rest.git.getCommit({
-    owner,
-    repo,
+  const { data: commitData } = await octokitCommit.rest.git.getCommit({
+    owner: storageOwner,
+    repo: storageRepo,
     commit_sha: commitSha,
   });
 
   const treeSha = commitData.tree.sha;
 
   // Create a new blob with the file content
-  const { data: blobData } = await octokit.rest.git.createBlob({
-    owner,
-    repo,
+  const { data: blobData } = await octokitCommit.rest.git.createBlob({
+    owner: storageOwner,
+    repo: storageRepo,
     content: fileContent,
     encoding: "utf-8",
   });
 
   // Create a new tree that adds the new file
-  const { data: newTreeData } = await octokit.rest.git.createTree({
-    owner,
-    repo,
+  const { data: newTreeData } = await octokitCommit.rest.git.createTree({
+    owner: storageOwner,
+    repo: storageRepo,
     base_tree: treeSha,
     tree: [
       {
@@ -440,18 +497,18 @@ async function commitFileToBranch({ octokit, branch, fileContent }) {
   });
 
   // Create a new commit
-  const { data: newCommitData } = await octokit.rest.git.createCommit({
-    owner,
-    repo,
+  const { data: newCommitData } = await octokitCommit.rest.git.createCommit({
+    owner: storageOwner,
+    repo: storageRepo,
     message: `Update stats file for ${file_path_owner}/${file_path_repo}`,
     tree: newTreeData.sha,
     parents: [commitSha],
   });
 
   // Update the branch reference to point to the new commit
-  await octokit.rest.git.updateRef({
-    owner,
-    repo,
+  await octokitCommit.rest.git.updateRef({
+    owner: storageOwner,
+    repo: storageRepo,
     ref: `heads/${branch}`,
     sha: newCommitData.sha,
   });
